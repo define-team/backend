@@ -1,0 +1,857 @@
+from flask import Blueprint, request, jsonify
+from app.models import User, Role, db, Key, Operation, Device
+from app.utils.decorators import require_admin_auth
+from sqlalchemy.orm import joinedload
+import uuid
+import jwt
+from datetime import datetime, timedelta
+
+bp = Blueprint("admin", __name__, url_prefix="/admin")
+
+from app.utils.admin_jwt_utils import generate_admin_jwt
+
+@bp.route("/login/", methods=["POST"])
+def admin_login():
+    """
+    Админ логин
+    ---
+    tags:
+      - Admin
+    parameters:
+      - in: body
+        name: body
+        required: true
+        schema:
+          type: object
+          properties:
+            username:
+              type: string
+              example: "admin"
+            password:
+              type: string
+              example: "admin1234"
+    responses:
+      200:
+        description: Токен успешно выдан
+      401:
+        description: Неверный логин или пароль
+    """
+    data = request.get_json()
+    username = data.get("username")
+    password = data.get("password")
+
+    if username != "admin" or password != "admin1234":
+        return jsonify({"error": "Unauthorized"}), 401
+
+    try:
+        token = generate_admin_jwt(admin_id=1)  # Подставь актуальный ID, если берёшь из БД
+        return jsonify({"token": token})
+    except Exception as e:
+        print(f"Ошибка генерации токена: {e}")
+        return jsonify({"error": str(e)}), 500
+
+
+@bp.route("/operations/", methods=["GET"])
+@require_admin_auth
+def get_operations():
+    """
+        Получить логи операций
+        ---
+        tags:
+          - Admin - Operations
+        security:
+          - BearerAuth: []  # токен админа
+        parameters:
+          - in: query
+            name: user_id
+            type: string
+            required: false
+            description: Фильтрация по ID пользователя
+          - in: query
+            name: key_number
+            type: integer
+            required: false
+            description: Фильтрация по номеру ключа
+          - in: query
+            name: device_id
+            type: integer
+            required: false
+            description: Фильтрация по ID устройства
+        responses:
+          200:
+            description: Список операций
+        """
+    user_id = request.args.get("user_id")
+    key_number = request.args.get("key_number")
+    device_id = request.args.get("device_id")
+
+    query = Operation.query.options(
+        joinedload(Operation.user),
+        joinedload(Operation.key),
+        joinedload(Operation.device)
+    )
+
+    if user_id:
+        query = query.join(User).filter(User.user_id == user_id)
+    if key_number:
+        query = query.join(Key).filter(Key.key_number == key_number)
+    if device_id:
+        query = query.join(Device).filter(Device.device_id == device_id)
+
+    operations = query.order_by(Operation.timestamp.desc()).all()
+
+    result = []
+    for op in operations:
+        result.append({
+            "id": op.id,
+            "user_id": op.user.user_id if op.user else None,
+            "key_number": op.key.key_number if op.key else None,
+            "device_id": op.device.device_id if op.device else None,
+            "type": op.type,
+            "timestamp": op.timestamp.isoformat()
+        })
+    try:
+        return jsonify(result)
+    except Exception as e:
+        print(f"Ошибка : {e}")
+        return jsonify({"error": str(e)}), 500
+
+@bp.route("/create_device/", methods=["POST"])
+@require_admin_auth
+def create_device():
+    """
+    Создать новое устройство
+    ---
+    tags:
+      - Admin - Devices
+    security:
+          - BearerAuth: []  # токен админа
+    parameters:
+      - in: body
+        name: body
+        required: true
+        schema:
+          type: object
+          properties:
+            device_id:
+              type: string
+              example: "device_001"
+            auth_key:
+              type: string
+              example: "super_secret_key"
+    responses:
+      200:
+        description: Устройство успешно создано
+      400:
+        description: Ошибка запроса или устройство уже существует
+    """
+    data = request.get_json()
+    device_id = data.get("device_id")
+    auth_key = data.get("auth_key")
+
+    if not all([device_id, auth_key]):
+        return jsonify({"status": "error", "reason": "Missing fields"}), 400
+
+    if Device.query.filter_by(device_id=device_id).first():
+        return jsonify({"status": "error", "reason": "Device already exists"}), 400
+
+    new_device = Device(device_id=device_id, auth_token=auth_key)
+    db.session.add(new_device)
+    db.session.commit()
+    try:
+        return jsonify({"status": "ok", "device_id": new_device.device_id})
+    except Exception as e:
+        print(f"Ошибка : {e}")
+        return jsonify({"error": str(e)}), 500
+
+
+@bp.route("/update_device/<string:device_id>/", methods=["PUT"])
+@require_admin_auth
+def update_device(device_id):
+    """
+    Обновить данные устройства
+    ---
+    tags:
+      - Admin - Devices
+    security:
+          - BearerAuth: []  # токен админа
+    parameters:
+      - in: path
+        name: device_id
+        type: string
+        required: true
+        description: ID устройства для обновления
+      - in: body
+        name: body
+        required: true
+        schema:
+          type: object
+          properties:
+            auth_key:
+              type: string
+              example: "new_secret_key"
+    responses:
+      200:
+        description: Устройство успешно обновлено
+      400:
+        description: Ошибка запроса
+      404:
+        description: Устройство не найдено
+    """
+    data = request.get_json()
+    device = Device.query.filter_by(device_id=device_id).first()
+    if not device:
+        return jsonify({"status": "error", "reason": "Device not found"}), 404
+
+    auth_key = data.get("auth_key")
+    if auth_key:
+        device.auth_token = auth_key
+
+    db.session.commit()
+    try:
+        return jsonify({"status": "ok", "device_id": device.device_id})
+    except Exception as e:
+        print(f"Ошибка : {e}")
+        return jsonify({"error": str(e)}), 500
+
+
+@bp.route("/delete_device/<string:device_id>/", methods=["DELETE"])
+@require_admin_auth
+def delete_device(device_id):
+    """
+    Удалить устройство
+    ---
+    tags:
+      - Admin - Devices
+    security:
+          - BearerAuth: []  # токен админа
+    parameters:
+      - in: path
+        name: device_id
+        type: string
+        required: true
+        description: ID устройства для удаления
+    responses:
+      200:
+        description: Устройство успешно удалено
+      404:
+        description: Устройство не найдено
+    """
+    device = Device.query.filter_by(device_id=device_id).first()
+    if not device:
+        return jsonify({"status": "error", "reason": "Device not found"}), 404
+
+    db.session.delete(device)
+    db.session.commit()
+    try:
+        return jsonify({"status": "ok", "message": f"Device {device_id} deleted"})
+    except Exception as e:
+        print(f"Ошибка : {e}")
+        return jsonify({"error": str(e)}), 500
+
+
+@bp.route("/list_devices/", methods=["GET"])
+@require_admin_auth
+def list_devices():
+    """
+        Список всех устройств
+        ---
+        tags:
+          - Admin - Devices
+        security:
+          - BearerAuth: []  # токен админа
+        responses:
+          200:
+            description: Список устройств
+        """
+    devices = Device.query.all()
+    device_list = [{"device_id": d.device_id} for d in devices]
+    try:
+        return jsonify({"devices": device_list})
+    except Exception as e:
+        print(f"Ошибка : {e}")
+        return jsonify({"error": str(e)}), 500
+
+# --- Keys ---
+@bp.route("/create_key/", methods=["POST"])
+@require_admin_auth
+def create_key():
+    """
+    Создать новый ключ
+    ---
+    tags:
+      - Admin - Keys
+    security:
+      - BearerAuth: []  # токен админа
+    parameters:
+      - in: body
+        name: body
+        required: true
+        schema:
+          type: object
+          properties:
+            key_number:
+              type: string  # изменили на string
+              example: "р101"
+            assigned_role:
+              type: string
+              example: "Преподаватель"
+    responses:
+      200:
+        description: Ключ успешно создан
+      400:
+        description: Ошибка запроса или ключ уже существует
+      404:
+        description: Роль не найдена
+    """
+    data = request.get_json()
+    key_number = data.get("key_number")
+    assigned_role = data.get("assigned_role")
+
+    if not all([key_number, assigned_role]):
+        return jsonify({"status": "error", "reason": "Missing fields"}), 400
+
+    role = Role.query.filter_by(name=assigned_role).first()
+    if not role:
+        return jsonify({"status": "error", "reason": "Role not found"}), 404
+
+    if Key.query.filter_by(key_number=key_number).first():
+        return jsonify({"status": "error", "reason": "Key already exists"}), 400
+
+    new_key = Key(key_number=key_number, assigned_role_id=role.id)
+    db.session.add(new_key)
+    db.session.commit()
+    try:
+        return jsonify({"status": "ok", "key_number": new_key.key_number})
+    except Exception as e:
+        print(f"Ошибка : {e}")
+        return jsonify({"error": str(e)}), 500
+
+
+@bp.route("/update_key/<string:key_number>/", methods=["PUT"])
+@require_admin_auth
+def update_key(key_number):
+    """
+    Обновить данные ключа
+    ---
+    tags:
+      - Admin - Keys
+    security:
+      - BearerAuth: []  # токен админа
+    parameters:
+      - in: path
+        name: key_number
+        type: string  # изменили на string
+        required: true
+        description: Номер ключа для обновления (например, р101)
+      - in: body
+        name: body
+        required: true
+        schema:
+          type: object
+          properties:
+            assigned_role:
+              type: string
+              example: "user"
+            status:
+              type: string
+              example: "active"
+    responses:
+      200:
+        description: Ключ успешно обновлён
+      400:
+        description: Ошибка запроса
+      404:
+        description: Ключ или роль не найдены
+    """
+    data = request.get_json()
+    key = Key.query.filter_by(key_number=key_number).first()
+    if not key:
+        return jsonify({"status": "error", "reason": "Key not found"}), 404
+
+    assigned_role = data.get("assigned_role")
+    status = data.get("status")
+
+    if assigned_role:
+        role = Role.query.filter_by(name=assigned_role).first()
+        if not role:
+            return jsonify({"status": "error", "reason": "Role not found"}), 404
+        key.assigned_role_id = role.id
+    if status:
+        key.status = status
+
+    db.session.commit()
+    try:
+        return jsonify({"status": "ok", "key_number": key.key_number})
+    except Exception as e:
+        print(f"Ошибка : {e}")
+        return jsonify({"error": str(e)}), 500
+
+
+@bp.route("/delete_key/<int:key_number>/", methods=["DELETE"])
+@require_admin_auth
+def delete_key(key_number):
+    """
+    Удалить ключ
+    ---
+    tags:
+      - Admin - Keys
+    security:
+          - BearerAuth: []  # токен админа
+    parameters:
+      - in: path
+        name: key_number
+        type: string
+        required: true
+        description: Номер ключа для удаления
+    responses:
+      200:
+        description: Ключ успешно удалён
+      404:
+        description: Ключ не найден
+    """
+    key = Key.query.filter_by(key_number=key_number).first()
+    if not key:
+        return jsonify({"status": "error", "reason": "Key not found"}), 404
+
+    db.session.delete(key)
+    db.session.commit()
+    try:
+        return jsonify({"status": "ok", "message": f"Key {key_number} deleted"})
+    except Exception as e:
+        print(f"Ошибка : {e}")
+        return jsonify({"error": str(e)}), 500
+
+
+@bp.route("/keys/", methods=["GET"])
+@require_admin_auth
+def list_keys():
+    """
+        Получить список всех ключей
+        ---
+        tags:
+          - Admin - Keys
+        security:
+          - BearerAuth: []  # токен админа
+        responses:
+          200:
+            description: Список ключей
+    """
+    try:
+        keys = Key.query.all()
+
+        if not keys:
+            print("Нет ключей в базе данных.")
+
+        result = []
+        for key in keys:
+            # Используем связь для получения имени роли
+            role_name = key.assigned_role.name if key.assigned_role else "No Role"
+
+            print(f"Key: {key.key_number}, Role: {role_name}, User: {key.last_user_id}, Device: {key.last_device_id}")
+            result.append({
+                "id": key.id,
+                "key_number": key.key_number,
+                "status": key.status,
+                "assigned_role": role_name,  # Выводим имя роли
+                "last_user_id": key.last_user_id if key.last_user_id else None,
+                "last_device_id": key.last_device_id if key.last_device_id else None,
+                "updated_at": key.updated_at.isoformat() if key.updated_at else "No Date"
+            })
+
+        return jsonify(result)
+
+    except Exception as e:
+        print(f"Ошибка при получении списка ключей: {e}")
+        return jsonify({"error": str(e)}), 500
+
+
+@bp.route("/create_user/", methods=["POST"])
+@require_admin_auth
+def create_user():
+    """
+            Создать нового пользователя
+    ---
+    tags:
+      - Admin - User
+    security:
+      - BearerAuth: []
+    parameters:
+      - in: body
+        name: body
+        required: true
+        schema:
+          type: object
+          properties:
+              name:
+                type: string
+                example: "Иван Иванов"
+              nfc_tag:
+                type: string
+                example: "04A224B98C6280"
+              role:
+                type: string
+                example: "Преподаватель"
+    responses:
+      200:
+        description: Пользователь успешно создан
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                status:
+                  type: string
+                  example: ok
+                user_id:
+                  type: string
+                  example: "user_a1b2c3d4"
+                role_id:
+                  type: integer
+                  example: 1
+      400:
+        description: Ошибка запроса
+      404:
+        description: Роль не найдена
+
+    """
+
+    data = request.get_json()
+    name = data.get("name")
+    nfc_tag = data.get("nfc_tag")
+    role_name = data.get("role")
+
+    if not all([name, nfc_tag, role_name]):
+        return jsonify({"status": "error", "reason": "Missing fields"}), 400
+
+    role = Role.query.filter_by(name=role_name).first()
+    if not role:
+        return jsonify({"status": "error", "reason": "Role not found"}), 404
+
+    try:
+        new_user = User(name=name, nfc_tag=nfc_tag, role_id=role.id)
+        db.session.add(new_user)
+        db.session.commit()
+    except Exception as e:
+        db.session.rollback()
+        return jsonify({"status": "error", "reason": str(e)}), 500
+
+    return jsonify({"status": "ok", "user_id": new_user.user_id, "role_id": new_user.role_id}), 200
+
+
+@bp.route("/update_user/<string:user_id>/", methods=["PUT"])
+@require_admin_auth
+def update_user(user_id):
+    """
+    Обновить данные пользователя
+    ---
+    tags:
+      - Admin - User
+    security:
+      - BearerAuth: []
+    parameters:
+      - in: path
+        name: user_id
+        required: true
+        schema:
+          type: string
+        description: Уникальный ID пользователя
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              name:
+                type: string
+                example: "Пётр Петров"
+              nfc_tag:
+                type: string
+                example: "04B193D821AB"
+              role_id:
+                type: integer
+                example: 2
+    responses:
+      200:
+        description: Пользователь обновлён
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                status:
+                  type: string
+                  example: ok
+                user_id:
+                  type: string
+      400:
+        description: Ошибка запроса
+      404:
+        description: Пользователь или роль не найдены
+    """
+
+    data = request.get_json()
+    user = User.query.filter_by(user_id=user_id).first()
+    if not user:
+        return jsonify({"status": "error", "reason": "User not found"}), 404
+
+    name = data.get("name")
+    nfc_tag = data.get("nfc_tag")
+    role_id = data.get("role_id")
+
+    if name:
+        user.name = name
+    if nfc_tag:
+        user.nfc_tag = nfc_tag
+    if role_id:
+        role = Role.query.get(role_id)
+        if not role:
+            return jsonify({"status": "error", "reason": "Role not found"}), 404
+        user.role = role
+
+    db.session.commit()
+    return jsonify({"status": "ok", "user_id": user.user_id}), 200
+
+
+@bp.route("/delete_user/<string:user_id>/", methods=["DELETE"])
+@require_admin_auth
+def delete_user(user_id):
+    """
+    Удалить пользователя
+    ---
+    tags:
+      - Admin - User
+    security:
+      - BearerAuth: []
+    parameters:
+      - in: path
+        name: user_id
+        required: true
+        schema:
+          type: string
+        description: Уникальный ID пользователя
+    responses:
+      200:
+        description: Пользователь успешно удалён
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                status:
+                  type: string
+                  example: ok
+                message:
+                  type: string
+                  example: "User abc123 deleted"
+      404:
+        description: Пользователь не найден
+    """
+
+    user = User.query.filter_by(user_id=user_id).first()
+    if not user:
+        return jsonify({"status": "error", "reason": "User not found"}), 404
+
+    db.session.delete(user)
+    db.session.commit()
+    try:
+        return jsonify({"status": "ok", "message": f"User {user_id} deleted"})
+    except Exception as e:
+        print(f"Ошибка : {e}")
+        return jsonify({"error": str(e)}), 500
+
+
+@bp.route("/users/", methods=["GET"])
+@require_admin_auth
+def list_users():
+    """
+    Получить список всех пользователей
+    ---
+    tags:
+      - Admin - User
+    security:
+      - BearerAuth: []
+    responses:
+      200:
+        description: Список пользователей
+        content:
+          application/json:
+            schema:
+              type: array
+              items:
+                type: object
+                properties:
+                  id:
+                    type: integer
+                  user_id:
+                    type: string
+                  name:
+                    type: string
+                  nfc_tag:
+                    type: string
+                  role:
+                    type: string
+    """
+
+    users = User.query.all()
+    result = []
+    for user in users:
+        result.append({
+            "id": user.id,
+            "user_id": user.user_id,
+            "name": user.name,
+            "nfc_tag": user.nfc_tag,
+            "role": user.role.name if user.role else None
+        })
+    return jsonify(result)
+SECRET_KEY = "your_admin_secret_key"  # тот же, что в декораторе
+
+
+
+@bp.route('/roles/', methods=['POST'])
+@require_admin_auth
+def create_role():
+    """
+    Создание новой категории сотрудников
+    ---
+    tags:
+      - Admin - Roles
+    parameters:
+      - in: body
+        name: body
+        required: true
+        schema:
+          type: object
+          properties:
+            name:
+              type: string
+              example: "Преподаватель"
+          required:
+            - name
+    responses:
+      201:
+        description: Role created successfully
+      400:
+        description: Role already exists or invalid data
+    """
+    data = request.get_json()
+    name = data.get('name')
+
+    if not name:
+        return jsonify({"error": "Role name is required"}), 400
+
+    if Role.query.filter_by(name=name).first():
+        return jsonify({"error": "Role already exists"}), 400
+
+    role = Role(name=name)
+    db.session.add(role)
+    db.session.commit()
+
+    return jsonify({"message": "Role created", "id": role.id}), 201
+
+
+@bp.route('/roles/', methods=['GET'])
+@require_admin_auth
+def list_roles():
+    """
+        Вывод списка всех категорий сотрудников
+        ---
+        tags:
+          - Admin - Roles
+        responses:
+          200:
+            description: List of all roles
+            content:
+              application/json:
+                schema:
+                  type: array
+                  items:
+                    type: object
+                    properties:
+                      id:
+                        type: integer
+                      name:
+                        type: string
+        """
+    roles = Role.query.all()
+    return jsonify([{"id": role.id, "name": role.name} for role in roles])
+
+
+@bp.route('/roles/<int:role_id>/', methods=['PUT'])
+@require_admin_auth
+def update_role(role_id):
+    """
+    Обновление категории сотрудника
+    ---
+    tags:
+      - Admin - Roles
+    parameters:
+      - name: role_id
+        in: path
+        type: integer
+        required: true
+        description: ID роли для обновления
+      - in: body
+        name: body
+        required: true
+        schema:
+          type: object
+          properties:
+            name:
+              type: string
+              example: "Научный сотрудник"
+          required:
+            - name
+    responses:
+      200:
+        description: Role updated successfully
+      400:
+        description: Invalid input
+      404:
+        description: Role not found
+    """
+    data = request.get_json()
+    name = data.get('name')
+
+    role = Role.query.get(role_id)
+    if not role:
+        return jsonify({"error": "Role not found"}), 404
+
+    if not name:
+        return jsonify({"error": "New name is required"}), 400
+
+    role.name = name
+    db.session.commit()
+
+    return jsonify({"message": "Role updated"})
+
+
+@bp.route('/roles/<int:role_id>/', methods=['DELETE'])
+@require_admin_auth
+def delete_role(role_id):
+    """
+        Удаление категории сотрудников
+        ---
+        tags:
+          - Admin - Roles
+        parameters:
+          - name: role_id
+            in: path
+            type: integer
+            required: true
+            description: ID of the role to delete
+        responses:
+          200:
+            description: Role deleted successfully
+          404:
+            description: Role not found
+        """
+    role = Role.query.get(role_id)
+    if not role:
+        return jsonify({"error": "Role not found"}), 404
+
+    db.session.delete(role)
+    db.session.commit()
+
+    return jsonify({"message": "Role deleted"})
