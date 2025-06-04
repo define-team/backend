@@ -292,10 +292,13 @@ def create_key():
           properties:
             key_number:
               type: string  # изменили на string
-              example: "р101"
-            assigned_role:
+              example: "101"
+            keyUuid:
               type: string
-              example: "Преподаватель"
+              example: "uuid1"
+            assigned_role_id:
+              type: number
+              example: "1"
     responses:
       200:
         description: Ключ успешно создан
@@ -306,23 +309,24 @@ def create_key():
     """
     data = request.get_json()
     key_number = data.get("key_number")
-    assigned_role = data.get("assigned_role")
+    assigned_role_id = data.get("assigned_role_id")
+    key_uuid = data.get("keyUuid")
 
-    if not all([key_number, assigned_role]):
+    if not all([key_number, assigned_role_id, key_uuid]):
         return jsonify({"status": "error", "reason": "Missing fields"}), 400
 
-    role = Role.query.filter_by(name=assigned_role).first()
+    role = Role.query.filter_by(id=assigned_role_id).first()
     if not role:
         return jsonify({"status": "error", "reason": "Role not found"}), 404
 
     if Key.query.filter_by(key_number=key_number).first():
         return jsonify({"status": "error", "reason": "Key already exists"}), 400
 
-    new_key = Key(key_number=key_number, assigned_role_id=role.id)
+    new_key = Key(key_number=key_number, assigned_role_id=role.id, key_uuid=key_uuid)
     db.session.add(new_key)
     db.session.commit()
     try:
-        return jsonify({"status": "ok", "key_number": new_key.key_number})
+        return jsonify({"status": "ok", "key_number": new_key.key_number, "key_uuid": new_key.key_uuid})
     except Exception as e:
         print(f"Ошибка : {e}")
         return jsonify({"error": str(e)}), 500
@@ -353,6 +357,9 @@ def update_key(key_number):
             assigned_role:
               type: string
               example: "user"
+            keyUuid:
+              type: string
+              example: "uuid1"
             status:
               type: string
               example: "active"
@@ -371,12 +378,15 @@ def update_key(key_number):
 
     assigned_role = data.get("assigned_role")
     status = data.get("status")
+    key_uuid = data.get("keyUuid")
 
     if assigned_role:
         role = Role.query.filter_by(name=assigned_role).first()
         if not role:
             return jsonify({"status": "error", "reason": "Role not found"}), 404
         key.assigned_role_id = role.id
+    if key_uuid:
+      key.key_uuid = key_uuid
     if status:
         key.status = status
 
@@ -489,9 +499,9 @@ def create_user():
               nfc_tag:
                 type: string
                 example: "04A224B98C6280"
-              role:
-                type: string
-                example: "Преподаватель"
+              role_id:
+                type: number
+                example: 1
     responses:
       200:
         description: Пользователь успешно создан
@@ -519,12 +529,12 @@ def create_user():
     data = request.get_json()
     name = data.get("name")
     nfc_tag = data.get("nfc_tag")
-    role_name = data.get("role")
+    role_id = data.get("role_id")
 
-    if not all([name, nfc_tag, role_name]):
+    if not all([name, nfc_tag, role_id]):
         return jsonify({"status": "error", "reason": "Missing fields"}), 400
 
-    role = Role.query.filter_by(name=role_name).first()
+    role = Role.query.filter_by(id=role_id).first()
     if not role:
         return jsonify({"status": "error", "reason": "Role not found"}), 404
 
