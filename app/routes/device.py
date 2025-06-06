@@ -4,6 +4,11 @@ from app.utils.jwt_utils import generate_jwt
 from app.utils.decorators import require_device_auth
 from datetime import datetime
 import logging
+import enum
+
+class OperationType(enum.Enum):
+    TAKE = "take"
+    RETURN = "return"
 
 bp = Blueprint("device", __name__, url_prefix="")
 
@@ -12,50 +17,107 @@ bp = Blueprint("device", __name__, url_prefix="")
 @require_device_auth
 def scan_card():
     """
-        Валидация NFC карты
-        ---
-        tags:
-          - Device
-        parameters:
-          - in: body
-            name: body
-            required: true
-            schema:
-              type: object
-              properties:
-                nfcId:
-                  type: string
-                  example: "04A224B98C6280"
-        responses:
-          200:
-            description: Карта успешно валидирована
-            schema:
-              type: object
-              properties:
-                status:
-                  type: string
-                  enum: [success]
-          401:
-            description: Ошибка валидации карты
-            schema:
-              type: object
-              properties:
-                status: 
-                  type: string
-                  enum: [error]
+    Валидация NFC карты и выдача информации о доступных ключах
+    ---
+    tags:
+      - Device
+    parameters:
+      - in: body
+        name: body
+        required: true
+        schema:
+          type: object
+          properties:
+            nfcId:
+              type: string
+              example: "04A224B98C6280"
+    responses:
+      200:
+        description: Успешная валидация
+        schema:
+          type: object
+          properties:
+            status:
+              type: string
+              enum: [success]
+            available_keys:
+              type: array
+              items:
+                type: object
+            unavailable_keys:
+              type: array
+              items:
+                type: object
+      401:
+        description: Ошибка валидации
+        schema:
+          type: object
+          properties:
+            status:
+              type: string
+              enum: [error]
+            log:
+              type: string
     """
     data = request.get_json()
     nfc_id = data.get("nfcId")
 
     if not nfc_id:
-        return jsonify({"status": "error"}), 401
+        return jsonify({
+            "status": "error",
+            "log": "NFC ID не передан"
+        }), 401
 
     user = User.query.filter_by(nfc_tag=nfc_id).first()
 
-    if user:
-        return jsonify({"status": "success"}), 200
-    else:
-        return jsonify({"status": "error"}), 401
+    if not user:
+        return jsonify({
+            "status": "error",
+            "log": f"Пользователь с меткой '{nfc_id}' не найден"
+        }), 401
+
+    device = Device.query.get(request.device_id)
+    if not device:
+        return jsonify({
+            "status": "error",
+            "log": "Устройство не найдено"
+        }), 401
+
+    # Ключи, соответствующие роли пользователя
+    role_keys = Key.query.filter_by(assigned_role_id=user.role_id).all()
+
+    available_keys = []
+    unavailable_keys = []
+
+    for key in role_keys:
+        key_data = {
+            "id": key.id,
+            "key_number": key.key_number,
+            "is_taken": key.is_taken,
+            "key_slot_id": key.key_slot_id,
+            "device_id": key.key_slot.device_id if key.key_slot else None,
+            "last_user_id": key.last_user_id,
+            "last_device_id": key.last_device_id,
+            "assigned_role_id": key.assigned_role_id,
+            "created_at": key.created_at.isoformat() if key.created_at else None,
+            "updated_at": key.updated_at.isoformat() if key.updated_at else None
+        }
+
+        if (
+            key.key_slot and
+            key.key_slot.device_id == device.id and
+            not key.is_taken
+        ):
+            available_keys.append(key_data)
+        else:
+            unavailable_keys.append(key_data)
+
+    return jsonify({
+        "status": "success",
+        "available_keys": available_keys,
+        "unavailable_keys": unavailable_keys
+    }), 200
+
 
 
 @bp.route("/init/", methods=["POST"])
@@ -88,7 +150,7 @@ def init_device():
     device_id = data.get("device_id")
     auth_key = data.get("auth_key")
 
-    device = Device.query.filter_by(device_id=device_id, auth_token=auth_key).first()
+    device = Device.query.filter_by(id=device_id, auth_token=auth_key).first()
     if not device:
         return jsonify({"error": "Unauthorized"}), 401
 
@@ -100,182 +162,170 @@ def init_device():
 @require_device_auth
 def get_key():
     """
-        Получение ключа
-        ---
-        tags:
-          - Device
-        parameters:
-          - in: body
-            name: body
-            required: true
-            schema:
-              type: object
-              properties:
-                number:
-                  type: string
-                  example: "101"
-                  description: Номер ключа
-                nfcId:
-                  type: string
-                  example: "04A224B98C6280"
-                  description: Идентификатор NFC пользователя
-              required:
-                - number
-                - nfcId
-        responses:
-          200:
-            description: Результат запроса ключа
-            schema:
-              oneOf:
-                - type: object
-                  properties:
-                    status:
-                      type: string
-                      example: "error"
-                    errorCode:
-                      type: string
-                      example: "bad_request"
-                - type: object
-                  properties:
-                    keySlotNumber:
-                      type: string
-                      example: "10"
-                      description: Номер ячейки ключа (если есть)
-                    keyUuid:
-                      type: string
-                      example: "uuid-1234"
-          401:
-            description: Ошибка авторизации устройства
+    Получение ключа
+    ---
+    tags:
+      - Device
+    parameters:
+      - in: body
+        name: body
+        required: true
+        schema:
+          type: object
+          properties:
+            key_number:
+              type: string
+              example: "101"
+            nfcId:
+              type: string
+              example: "04A224B98C6280"
+    responses:
+      200:
+        description: Результат получения ключа
+        schema:
+          type: object
+          properties:
+            status:
+              type: string
+              enum: [success, error]
+            keyId:
+              type: integer
+            nfcId:
+              type: string
+            keySlotNumber:
+              type: string
     """
     data = request.get_json()
     key_number = data.get("number")
     nfc_id = data.get("nfcId")
 
     if not key_number or not nfc_id:
-        return jsonify({"status": "error", "errorCode": "bad_request"}), 400
+        return jsonify({"status": "error"}), 400
 
     user = User.query.filter_by(nfc_tag=nfc_id).first()
     key = Key.query.filter_by(key_number=key_number).first()
+    device = Device.query.get(request.device_id)
 
-    if not user or not key:
-        return jsonify({"status": "error", "errorCode": "not_found"}), 400
+    if not user or not key or not device:
+        return jsonify({"status": "error"}), 400
 
-    if key.status == "taken":
-        return jsonify({"status": "error", "errorCode": "already_taken"}), 400
+    if key.is_taken:
+        return jsonify({"status": "error"}), 400
 
-    if key.assigned_role_id and (not user.role or user.role.id != key.assigned_role_id):
-        return jsonify({"status": "error", "errorCode": "no_access"}), 401
+    if key.assigned_role_id and user.role_id != key.assigned_role_id:
+        return jsonify({"status": "error"}), 403
 
     key_slot_number = key.key_slot.number if key.key_slot else None
 
-    key.status = "taken"
-    key.last_user_id = user.id
-    key.last_device_id = request.device_id
+    key.is_taken = True
     key.key_slot_id = None
-    key.updated_at = datetime.utcnow()
+    key.last_user_id = user.id
+    key.last_device_id = device.id
 
-    db.session.add(Operation(
+    # Добавление записи в Operation
+    operation = Operation(
         user_id=user.id,
         key_id=key.id,
-        device_id=request.device_id,
-        type="take",
-        timestamp=datetime.utcnow()
-    ))
-
+        device_id=device.id,
+        type='TAKE',
+        timestamp = datetime.utcnow()
+    )
+    db.session.add(operation)
     db.session.commit()
 
     return jsonify({
-        "keySlotNumber": key_slot_number,
-        "keyUuid": key.key_uuid
+        "status": "success",
+        "keyUuid": key.id,
+        "keySlotNumber": key_slot_number
     }), 200
+
 
 
 @bp.route("/return_key/", methods=["POST"])
 @require_device_auth
 def return_key():
     """
-        Возврат ключа
-        ---
-        tags:
-          - Device
-        parameters:
-          - in: body
-            name: body
-            required: true
-            schema:
-              type: object
-              properties:
-                keySlotNumber:
-                  type: string
-                  example: "1"
-                  description: Номер ячейки ключа
-                keyUuid:
-                  type: string
-                  example: "uuid1"
-                  description: Идентификатор ключа
-                nfcId:
-                  type: string
-                  example: "04A224B98C6280"
-                  description: Идентификатор NFC пользователя (необязательно)
-              required:
-                - keySlotNumber
-                - keyUuid
-        responses:
-          200:
-            description: Результат возврата ключа
-            schema:
-              type: object
-              properties:
-                status:
-                  type: string
-                  example: "success"
-          401:
-            description: Ошибка авторизации устройства
+    Возврат ключа
+    ---
+    tags:
+      - Device
+    parameters:
+      - in: body
+        name: body
+        required: true
+        schema:
+          type: object
+          properties:
+            keySlotNumber:
+              type: string
+              example: "10"
+            keyId:
+              type: integer
+              example: 42
+            nfcId:
+              type: string
+              example: "04A224B98C6280"
+    responses:
+      200:
+        description: Результат возврата ключа
+        schema:
+          type: object
+          properties:
+            status:
+              type: string
+              enum: [success, error]
+            keyId:
+              type: integer
+            nfcId:
+              type: string
+            keySlotNumber:
+              type: string
     """
     data = request.get_json()
     key_slot_number = data.get("keySlotNumber")
-    key_uuid = data.get("keyUuid")
+    key_id = data.get("keyId")
     nfc_id = data.get("nfcId")
 
-    if not key_slot_number or not key_uuid:
-        return jsonify({"status": "error", "errorCode": "bad_request"}), 400
+    if not key_slot_number or not key_id or not nfc_id:
+        return jsonify({"status": "error"}), 400
 
-    key = Key.query.filter_by(key_uuid=key_uuid).first()
-    if not key:
-        return jsonify({"status": "error", "errorCode": "key_not_found"}), 400
-
-    if key.status == "in_store":
-        return jsonify({"status": "error", "errorCode": "already_returned"}), 400
-
+    key = Key.query.get(key_id)
+    user = User.query.filter_by(nfc_tag=nfc_id).first()
     device = Device.query.get(request.device_id)
-    if not device:
-        return jsonify({"status": "error", "errorCode": "device_not_found"}), 401
 
-    key_slot = KeySlot.query.filter_by(number=key_slot_number, device_device_id=device.device_id).first()
+    if not key or not key.is_taken or not user or not device:
+        return jsonify({"status": "error"}), 400
+
+    key_slot = KeySlot.query.filter_by(
+        number=int(key_slot_number),
+        device_id=device.id
+    ).first()
+
     if not key_slot:
-        return jsonify({"status": "error", "errorCode": "key_slot_not_found"}), 404
+        return jsonify({"status": "error"}), 404
 
-    key.status = "in_store"
+    key.is_taken = False
     key.key_slot_id = key_slot.id
-    key.last_device_id = request.device_id
-    key.updated_at = datetime.utcnow()
+    key.last_user_id = user.id
+    key.last_device_id = device.id
 
-    if nfc_id:
-        user = User.query.filter_by(nfc_tag=nfc_id).first()
-        if user:
-            key.last_user_id = user.id
-
-    db.session.add(Operation(
-        user_id=key.last_user_id,
+    # Добавление записи в Operation
+    operation = Operation(
+        user_id=user.id,
         key_id=key.id,
-        device_id=request.device_id,
-        type="return",
+        device_id=device.id,
+        type='RETURN',
         timestamp=datetime.utcnow()
-    ))
-
+    )
+    db.session.add(operation)
     db.session.commit()
 
-    return jsonify({"status": "success"}), 200
+    return jsonify({
+        "status": "success",
+        "keyId": key.id,
+        "nfcId": nfc_id,
+        "keySlotNumber": key_slot.number
+    }), 200
 
 
 @bp.route("/get_empty_slot/", methods=["GET"])
@@ -286,30 +336,70 @@ def get_empty_slot():
     ---
     tags:
       - Device
+    security:
+      - BearerAuth: []  # токен устройства
     responses:
       200:
         description: Свободная ячейка найдена
       404:
         description: Нет свободных ячеек
     """
-    # 1. Найдём устройство по внутреннему ID
     device = Device.query.get(request.device_id)
     if not device:
         return jsonify({"status": "error", "reason": "Устройство не найдено"}), 404
 
-    # 2. Используем device.device_id для фильтрации
+    # Найдём ячейку, если:
+    # - key_slot относится к текущему устройству
+    # - либо нет связанного ключа (Key), либо он есть, но key_number = None
     empty_slot = (
         KeySlot.query
-        .filter_by(device_device_id=device.device_id)
-        .outerjoin(Key, Key.key_slot_id == KeySlot.id)
-        .filter(Key.id == None)
+        .filter_by(device_id=device.id)
+        .outerjoin(Key)
+        .filter((Key.id == None) | (Key.key_number == None))
         .order_by(KeySlot.number.asc())
         .first()
     )
 
-    logging.warning(f"device_id (external): {device.device_id}")
-
     if not empty_slot:
         return jsonify({"status": "error", "reason": "Нет свободной ячейки"}), 404
 
-    return jsonify({"status": "ok", "keySlotNumber": empty_slot.number})
+    return jsonify({
+        "status": "success",
+        "keySlotNumber": empty_slot.number,
+        "keySlotId": empty_slot.id
+    })
+
+
+
+
+# @bp.route("/free_keyslot/", methods=["GET"])
+# @require_device_auth
+# def get_empty_slot():
+#     """
+#     Получить номер свободной ячейки
+#     ---
+#     tags:
+#       - Admin - KeySlot
+#     security:
+#       - BearerAuth: []
+#     responses:
+#       200:
+#         description: Свободная ячейка найдена
+#         content:
+#           application/json:
+#             schema:
+#               type: object
+#               properties:
+#                 status:
+#                   type: string
+#                   example: ok
+#                 keyslot_number:
+#                   type: integer
+#       404:
+#         description: Нет свободных ячеек
+#     """
+#     keyslot = KeySlot.query.filter_by(status="free").first()
+#     if not keyslot:
+#         return jsonify({"status": "error", "reason": "No free key slots available"}), 404
+#
+#     return jsonify({"status": "ok", "keyslot_number": keyslot.number}), 200

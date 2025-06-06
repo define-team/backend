@@ -2,7 +2,7 @@ from flask import Flask
 from flask_sqlalchemy import SQLAlchemy
 from flask_migrate import Migrate
 from flasgger import Swagger
-
+from flask_cors import CORS
 
 from config import Config  # Загружаем класс конфигурации
 import os
@@ -21,6 +21,10 @@ def create_app():
     app = Flask(__name__)
     app.config.from_object(Config)
 
+    # Подключаем CORS
+    CORS(app, resources={r"/*": {"origins": "*"}})  # Разрешены все домены
+    # CORS(app, resources={r"/*": {"origins": ["http://localhost:5173"]}})
+
     db.init_app(app)
     migrate.init_app(app, db)
 
@@ -36,7 +40,7 @@ def create_app():
                 "type": "apiKey",
                 "name": "Authorization",
                 "in": "header",
-                "description": "Введите токен в формате **Bearer &lt;ваш JWT&gt;**"
+                "description": "Введите токен в формате **Bearer <ваш JWT>**"
             }
         },
         "security": [
