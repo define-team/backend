@@ -20,9 +20,20 @@ def register_blueprints(app):
 def create_app():
     app = Flask(__name__)
     app.config.from_object(Config)
-
+    cors = CORS(
+        app,
+        resources={
+            r"/*": {
+                "origins": ['http://localhost:8080','http://localhost:8000'
+                , 'https://ваш-домен.com', "*",'http://localhost:3000',
+                'http://127.0.0.1:5000',
+                'http://172.18.0.3:5000'],
+                "allow_headers": ["Authorization", "Content-Type"]
+            }
+        }
+    )
     # Подключаем CORS
-    CORS(app, resources={r"/*": {"origins": "*"}})  # Разрешены все домены
+    # CORS(app, resources={r"/*": {"origins": "*"}})  # Разрешены все домены
     # CORS(app, resources={r"/*": {"origins": ["http://localhost:5173"]}})
 
     db.init_app(app)

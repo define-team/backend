@@ -200,20 +200,20 @@ def get_key():
     nfc_id = data.get("nfcId")
 
     if not key_number or not nfc_id:
-        return jsonify({"status": "error"}), 400
+        return jsonify({"status": "error", "message": "Некорректные входные данные"}), 400
 
     user = User.query.filter_by(nfc_tag=nfc_id).first()
     key = Key.query.filter_by(key_number=key_number).first()
     device = Device.query.get(request.device_id)
 
     if not user or not key or not device:
-        return jsonify({"status": "error"}), 400
-
-    if key.is_taken:
-        return jsonify({"status": "error"}), 400
+        return jsonify({"status": "error", "message": "Пользователь, ключ или устройство не найдены"}), 400
 
     if key.assigned_role_id and user.role_id != key.assigned_role_id:
-        return jsonify({"status": "error"}), 403
+        return jsonify({"status": "error", "message": "Данный ключ вам недоступен"}), 403
+
+    if key.is_taken:
+        return jsonify({"status": "error", "message": "Данный ключ уже забран"}), 400
 
     key_slot_number = key.key_slot.number if key.key_slot else None
 
@@ -303,6 +303,8 @@ def return_key():
 
     if not key_slot:
         return jsonify({"status": "error"}), 404
+    if key_slot.is_locked or key_slot.key is not None:
+        return jsonify({"status": "error", "message": "Slot already in use"}), 400
 
     key.is_taken = False
     key.key_slot_id = key_slot.id
