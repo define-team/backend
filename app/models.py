@@ -44,7 +44,12 @@ class KeySlot(db.Model):
     is_locked = db.Column(db.Boolean, default=False)
     device_id = db.Column(db.String, db.ForeignKey('device.id'), nullable=False)
     device = db.relationship('Device', back_populates='key_stores')
-    key = db.relationship('Key', back_populates='key_slot', uselist=False)
+    key = db.relationship(
+        'Key',
+        back_populates='key_slot',
+        uselist=False,
+        passive_deletes=True
+    )
     __table_args__ = (
         db.UniqueConstraint('number', 'device_id', name='uq_slot_per_device'),
     )
@@ -52,21 +57,23 @@ class KeySlot(db.Model):
     updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
 
+
 class Key(db.Model):
     id = db.Column(db.String(40), primary_key=True, unique=True, nullable=False, default=lambda: uuid.uuid4().hex[:8])
     key_number = db.Column(db.String(20), unique=True, nullable=False)
     is_taken = db.Column(db.Boolean, default=False)
-    key_slot_id = db.Column(db.String, db.ForeignKey('key_slot.id'), nullable=True)
-    key_slot = db.relationship('KeySlot', back_populates='key')
+    key_slot_id = db.Column(db.String, db.ForeignKey('key_slot.id', ondelete='SET NULL'), nullable=True)
+    key_slot = db.relationship('KeySlot', back_populates='key', post_update=True)
     assigned_role_id = db.Column(db.String, db.ForeignKey('role.id'), nullable=False)
     assigned_role = db.relationship('Role', back_populates='assigned_keys')
     last_user_id = db.Column(db.String, db.ForeignKey('user.id'), nullable=True)
     last_user = db.relationship('User', back_populates='used_keys')
-    created_at = db.Column(db.DateTime, default=datetime.utcnow)
-    updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     last_device_id = db.Column(db.String, db.ForeignKey('device.id'), nullable=True)
     last_device = db.relationship('Device', back_populates='used_keys')
     operations = db.relationship('Operation', back_populates='key')
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
 
 
 class Operation(db.Model):

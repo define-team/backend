@@ -463,7 +463,7 @@ def create_key():
 
 
 
-@bp.route("/update_key/<string:key_number>/", methods=["PUT"])
+@bp.route("/update_key/<string:key_id>/", methods=["PUT"])
 @require_admin_auth
 def update_key(key_id):
     """
@@ -478,7 +478,7 @@ def update_key(key_id):
         name: key_id
         type: string
         required: true
-        description: Текущий номер ключа
+        description: ID ключа
       - in: body
         name: body
         required: true
@@ -487,16 +487,13 @@ def update_key(key_id):
           properties:
             key_number:
               type: string
-              example: "102"  # новый номер ключа (необязательно)
+              example: "102"
             assigned_role_id:
               type: string
               example: "role2"
             key_slot_id:
               type: string
               example: "slot2"
-            is_taken:
-              type: boolean
-              example: false
     responses:
       200:
         description: Ключ успешно обновлён
@@ -507,8 +504,6 @@ def update_key(key_id):
               type: string
             key_number:
               type: string
-            is_taken:
-              type: boolean
             key_slot_id:
               type: string
             assigned_role_id:
@@ -520,21 +515,22 @@ def update_key(key_id):
     """
 
     data = request.get_json()
-    key = Key.query.filter_by(key_number=key_id).first()
+    key = Key.query.get(key_id)
     if not key:
         return jsonify({"status": "error", "reason": "Key not found"}), 404
 
     new_number = data.get("key_number")
     new_role_id = data.get("assigned_role_id")
     new_slot_id = data.get("key_slot_id")
-    is_taken = data.get("is_taken")
 
-    if new_number:
+    # Проверка уникальности номера
+    if new_number and new_number != key.key_number:
+        if Key.query.filter_by(key_number=new_number).first():
+            return jsonify({"status": "error", "reason": "Key number already exists"}), 400
         key.key_number = new_number
+
     if new_role_id:
         key.assigned_role_id = new_role_id
-    if isinstance(is_taken, bool):
-        key.is_taken = is_taken
 
     if new_slot_id and new_slot_id != key.key_slot_id:
         new_slot = KeySlot.query.get(new_slot_id)
@@ -543,10 +539,10 @@ def update_key(key_id):
         if new_slot.key and new_slot.key.id != key.id:
             return jsonify({"status": "error", "reason": "Slot already occupied"}), 400
 
-        # Освобождаем предыдущую ячейку
+        # Освобождаем старую ячейку
         if key.key_slot:
             key.key_slot.key = None
-        # Назначаем новую
+
         key.key_slot = new_slot
 
     db.session.commit()
@@ -555,15 +551,14 @@ def update_key(key_id):
         "status": "ok",
         "id": key.id,
         "key_number": key.key_number,
-        "is_taken": key.is_taken,
         "key_slot_id": key.key_slot_id,
         "assigned_role_id": key.assigned_role_id,
-        "updated_at":key.updated_at.isoformat()
+        "updated_at": key.updated_at.isoformat()
     })
 
 
 
-@bp.route("/delete_key/<string:key_number>/", methods=["DELETE"])
+@bp.route("/delete_key/<string:key_id>/", methods=["DELETE"])
 @require_admin_auth
 def delete_key(key_id):
     """
@@ -578,7 +573,7 @@ def delete_key(key_id):
         name: key_id
         type: string
         required: true
-        description: Номер ключа для удаления
+        description: ID ключа для удаления
     responses:
       200:
         description: Ключ успешно удалён и ячейка освобождена
@@ -586,11 +581,10 @@ def delete_key(key_id):
         description: Ключ не найден
     """
 
-    key = Key.query.filter_by(id=key_id).first()
+    key = Key.query.get(key_id)
     if not key:
         return jsonify({"status": "error", "reason": "Key not found"}), 404
 
-    # Освобождаем связанную ячейку
     if key.key_slot:
         key.key_slot.key = None
 
@@ -601,6 +595,7 @@ def delete_key(key_id):
         "status": "ok",
         "message": f"Key with id {key_id} deleted"
     })
+
 
 
 
