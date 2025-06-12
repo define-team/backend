@@ -310,6 +310,8 @@ def delete_device(device_id):
     responses:
       200:
         description: Устройство удалено
+      400:
+        description: В устройстве есть ключи
       404:
         description: Устройство не найдено
     """
@@ -317,9 +319,18 @@ def delete_device(device_id):
     if not device:
         return jsonify({"status": "error", "reason": "Device not found"}), 404
 
+    # Проверка: все ли ячейки устройства пусты
+    non_empty_slots = [slot for slot in device.key_stores if slot.key is not None]
+    if non_empty_slots:
+        return jsonify({
+            "status": "error",
+            "reason": "Device contains keys in its slots. Remove them before deletion."
+        }), 400
+
     db.session.delete(device)
     db.session.commit()
     return jsonify({"status": "ok", "message": f"Device {device_id} deleted"})
+
 
 
 @bp.route("/list_devices/", methods=["GET"])
