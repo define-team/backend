@@ -446,6 +446,12 @@ def create_key():
     if Key.query.filter_by(key_number=key_number).first():
         return jsonify({"status": "error", "reason": "Key already exists"}), 400
 
+    # Проверка роли
+    role = Role.query.get(role_id)
+    if not role:
+        return jsonify({"status": "error", "reason": "Role not found"}), 400
+
+    # Проверка ячейки
     slot = KeySlot.query.get(slot_id)
     if not slot:
         return jsonify({"status": "error", "reason": "Slot not found"}), 404
@@ -469,8 +475,9 @@ def create_key():
         "is_taken": new_key.is_taken,
         "key_slot_id": new_key.key_slot_id,
         "assigned_role_id": new_key.assigned_role_id,
-        "created_at":new_key.created_at.isoformat()
+        "created_at": new_key.created_at.isoformat()
     })
+
 
 
 
@@ -534,15 +541,20 @@ def update_key(key_id):
     new_role_id = data.get("assigned_role_id")
     new_slot_id = data.get("key_slot_id")
 
-    # Проверка уникальности номера
+    # Проверка уникальности номера ключа
     if new_number and new_number != key.key_number:
         if Key.query.filter_by(key_number=new_number).first():
             return jsonify({"status": "error", "reason": "Key number already exists"}), 400
         key.key_number = new_number
 
+    # Проверка существования роли
     if new_role_id:
+        role = Role.query.get(new_role_id)
+        if not role:
+            return jsonify({"status": "error", "reason": "Role not found"}), 400
         key.assigned_role_id = new_role_id
 
+    # Проверка существования и доступности ячейки
     if new_slot_id and new_slot_id != key.key_slot_id:
         new_slot = KeySlot.query.get(new_slot_id)
         if not new_slot:
@@ -1298,35 +1310,48 @@ def update_role(role_id):
     if not name:
         return jsonify({"error": "New name is required"}), 400
 
+    # Проверка на уникальность названия (без учёта текущей роли)
+    existing_role = Role.query.filter(Role.name == name, Role.id != role_id).first()
+    if existing_role:
+        return jsonify({"error": "Role name already exists"}), 400
+
     role.name = name
     db.session.commit()
 
     return jsonify({"message": "Role updated"})
 
 
+
 @bp.route('/roles/<string:role_id>/', methods=['DELETE'])
 @require_admin_auth
 def delete_role(role_id):
     """
-        Удаление категории сотрудников
-        ---
-        tags:
-          - Admin - Roles
-        parameters:
-          - name: role_id
-            in: path
-            type: string
-            required: true
-            description: ID of the role to delete
-        responses:
-          200:
-            description: Role deleted successfully
-          404:
-            description: Role not found
-        """
+    Удаление категории сотрудников
+    ---
+    tags:
+      - Admin - Roles
+    parameters:
+      - name: role_id
+        in: path
+        type: string
+        required: true
+        description: ID of the role to delete
+    responses:
+      200:
+        description: Role deleted successfully
+      400:
+        description: Role is in use and cannot be deleted
+      404:
+        description: Role not found
+    """
     role = Role.query.get(role_id)
     if not role:
         return jsonify({"error": "Role not found"}), 404
+
+    if role.users or role.assigned_keys:
+        return jsonify({
+            "error": "Role is assigned to users or keys and cannot be deleted"
+        }), 400
 
     db.session.delete(role)
     db.session.commit()

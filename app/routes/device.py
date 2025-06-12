@@ -196,7 +196,7 @@ def get_key():
               type: string
     """
     data = request.get_json()
-    key_number = data.get("number")
+    key_number = data.get("key_number")
     nfc_id = data.get("nfcId")
 
     if not key_number or not nfc_id:
@@ -258,10 +258,10 @@ def return_key():
           properties:
             keySlotNumber:
               type: string
-              example: "10"
+              example: "1"
             keyId:
-              type: integer
-              example: 42
+              type: string
+              example: "v1gs412345"
             nfcId:
               type: string
               example: "04A224B98C6280"
